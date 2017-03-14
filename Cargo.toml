@@ -1,0 +1,7 @@
+[package]
+name = "rubble"
+version = "0.1.0"
+authors = ["clint <clint@fewbar.com>"]
+
+[dependencies]
+getopts = "*"
