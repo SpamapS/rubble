@@ -5,6 +5,7 @@ extern crate nix;
 use caps::{Capability, CapSet};
 use getopts::Options;
 use std::env;
+use std::fs;
 use std::fs::File;
 use std::io::Read;
 
@@ -134,24 +135,19 @@ fn has_caps() -> bool {
     }
 }
 
-fn read_overflowids() -> (uid_t, gid_t)
-{
+fn read_overflowids() -> (uid_t, gid_t) {
     let mut uid_data = String::new();
     File::open("/proc/sys/kernel/overflowuid").unwrap().read_to_string(&mut uid_data).unwrap();
     let overflow_uid: uid_t = match uid_data.trim().parse() {
         Ok(parsed) => parsed,
-        Err(e) => {
-            panic!("Could not parse {} as uid_t: {}", uid_data, e)
-        }
+        Err(e) => panic!("Could not parse {} as uid_t: {}", uid_data, e),
     };
 
     let mut gid_data = String::new();
     File::open("/proc/sys/kernel/overflowgid").unwrap().read_to_string(&mut gid_data).unwrap();
     let overflow_gid: gid_t = match gid_data.trim().parse() {
         Ok(parsed) => parsed,
-        Err(e) => {
-            panic!("Could not parse {} as gid_t: {}", gid_data, e)
-        }
+        Err(e) => panic!("Could not parse {} as gid_t: {}", gid_data, e),
     };
 
     (overflow_uid, overflow_gid)
@@ -273,7 +269,7 @@ fn main() {
 
     /* Never gain any more privs during exec */
     unsafe {
-        if prctl (PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 {
+        if prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 {
             panic!("prctl(PR_SET_NO_NEW_CAPS) failed");
         }
     }
@@ -314,12 +310,46 @@ fn main() {
         return;
     }
 
-    let mut unshare_user = matches.opt_present("unshare-user");
+    let mut opt_unshare_user = matches.opt_present("unshare-user");
     /* We have to do this if we weren't installed setuid (and we're not
      * root), so let's just DWIM */
-    if !is_privileged && getuid () != 0 {
-      unshare_user = true;
+    if !is_privileged && getuid() != 0 {
+        opt_unshare_user = true;
     }
 
+    // #ifdef ENABLE_REQUIRE_USERNS
+    /* In this build option, we require userns. */
+    if is_privileged && getuid() != 0 {
+        opt_unshare_user = true;
+    }
+    // #endif
+
+    if matches.opt_present("unshare-user-try") && fs::metadata("/proc/self/ns/user").is_ok() {
+        let mut disabled = false;
+
+        /* RHEL7 has a kernel module parameter that lets you enable user namespaces */
+        if fs::metadata("/sys/module/user_namespace/parameters/enable").is_ok() {
+            match File::open("/sys/module/user_namespace/parameters/enable") {
+                Err(_) => {}
+                Ok(mut f) => {
+                    let mut enable = String::new();
+                    f.read_to_string(&mut enable).unwrap();
+                    match enable.chars().next() {
+                        Some(c) if c == 'N' => disabled = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        /* Debian lets you disable *unprivileged* user namespaces. However this is not
+           a problem if we're privileged, and if we're not opt_unshare_user is TRUE
+           already, and there is not much we can do, its just a non-working setup. */
+
+        if !disabled {
+            opt_unshare_user = true;
+        }
+    }
+    let opt_unshare_user = opt_unshare_user; // No more changes!
     println!("Hello, world!");
 }
