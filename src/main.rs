@@ -1,13 +1,17 @@
 extern crate caps;
+extern crate env_logger;
 extern crate getopts;
 extern crate isatty;
+#[macro_use]
+extern crate log;
 extern crate nix;
 use caps::{Capability, CapSet};
-use getopts::Options;
+use getopts::{Options, Matches};
 use std::env;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
+use std::str::FromStr;
 
 use isatty::stdout_isatty;
 use nix::errno;
@@ -260,6 +264,32 @@ fn setup_opts(opts: &mut Options) {
                  "Kills with SIGKILL child process (COMMAND) when bwrap or bwrap's parent dies.");
 }
 
+struct ParsedOpts {
+    sandbox_uid: Option<uid_t>,
+    sandbox_gid: Option<gid_t>,
+}
+
+fn parse_one_opt<T: FromStr>(matches: &Matches, nm: &str) -> Option<T>
+    where <T as std::str::FromStr>::Err: std::fmt::Display {
+    match matches.opt_str(nm) {
+        None => None,
+        Some(opt_str) => {
+            match opt_str.parse::<T>() {
+                Err(e) => panic!("Could not parse {}: {}", opt_str, e),
+                Ok(opt_parsed) => Some(opt_parsed),
+            }
+        }
+    }
+}
+
+
+fn parse_opts(matches: &Matches) -> ParsedOpts {
+    ParsedOpts {
+        sandbox_uid: parse_one_opt(matches, "uid"),
+        sandbox_gid: parse_one_opt(matches, "gid"),
+    }
+}
+
 fn main() {
     let real_uid = getuid();
     let real_gid = getuid();
@@ -304,11 +334,14 @@ fn main() {
         Ok(m) => m,
         Err(f) => panic!(f.to_string()),
     };
+    let popts = parse_opts(&matches);
 
     if matches.opt_present("h") {
         usage(&program, opts);
         return;
     }
+
+    env_logger::init().unwrap();
 
     let mut opt_unshare_user = matches.opt_present("unshare-user");
     /* We have to do this if we weren't installed setuid (and we're not
@@ -351,5 +384,9 @@ fn main() {
         }
     }
     let opt_unshare_user = opt_unshare_user; // No more changes!
+
+    debug!("Creating root mount point");
+
+
     println!("Hello, world!");
 }
