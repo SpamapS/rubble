@@ -1,9 +1,16 @@
+extern crate caps;
 extern crate getopts;
+extern crate isatty;
 extern crate nix;
+use caps::{Capability, CapSet};
 use getopts::Options;
 use std::env;
+use std::fs::File;
+use std::io::Read;
+
+use isatty::stdout_isatty;
 use nix::errno;
-use nix::libc::{setfsuid, uid_t, prctl, PR_CAPBSET_DROP};
+use nix::libc::{setfsuid, uid_t, gid_t, prctl, PR_CAPBSET_DROP, PR_SET_NO_NEW_PRIVS, ttyname};
 use nix::unistd::{geteuid, getuid};
 
 
@@ -26,9 +33,9 @@ fn usage(program: &str, opts: Options) {
  * being able to read files the user can't, while at the same time
  * working around various kernel issues. See below for details.
  */
-fn acquire_privs(real_uid: uid_t, real_gid: uid_t) {
+fn acquire_privs(real_uid: uid_t, real_gid: uid_t) -> bool {
 
-    let mut is_privileged: bool;
+    let mut is_privileged: bool = false;
 
     let euid = geteuid();
 
@@ -55,6 +62,7 @@ fn acquire_privs(real_uid: uid_t, real_gid: uid_t) {
             if setfsuid(real_uid) < 0 {
                 panic!("Unable to set fsuid");
             }
+            /* setfsuid can't properly report errors, check that it worked (as per manpage) */
             /* XXX The man page for setfsuid says use -1, but unary
              * - as an operator isn't allowed on u32 */
             let new_fsuid = setfsuid(0 - 1 as u32);
@@ -62,8 +70,19 @@ fn acquire_privs(real_uid: uid_t, real_gid: uid_t) {
                 panic!("Unable to set fsuid (was {})", new_fsuid);
             }
         }
+        /* We never need capabilies after execve(), so lets drop everything from the bounding set */
         drop_cap_bounding_set();
+
+        /* Keep only the required capabilities for setup */
+        set_required_caps();
+    } else if real_uid != 0 && has_caps() {
+        /* We have some capabilities in the non-setuid case, which should not happen.
+         Probably caused by the binary being setcap instead of setuid which we
+         don't support anymore */
+        panic!("Unexpected capabilities but not setuid, old file caps config?");
     }
+    /* Else, we try unprivileged user namespaces */
+    is_privileged
 }
 
 fn drop_cap_bounding_set() {
@@ -84,16 +103,61 @@ fn drop_cap_bounding_set() {
     }
 }
 
+fn _set_required_caps() -> caps::Result<()> {
+    for cap in vec![Capability::CAP_SYS_ADMIN,
+                    Capability::CAP_SYS_CHROOT,
+                    Capability::CAP_NET_ADMIN,
+                    Capability::CAP_SETUID,
+                    Capability::CAP_SETGID] {
+        caps::raise(None, CapSet::Effective, cap)?;
+        caps::raise(None, CapSet::Permitted, cap)?;
+        caps::clear(None, CapSet::Inheritable)?;
+    }
+    Ok(())
+}
 
-fn set_required_caps() {}
+fn set_required_caps() {
+    match _set_required_caps() {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("Failure manipulating capabilities. {}", e);
+        }
+    };
+}
 
+fn has_caps() -> bool {
+    match caps::read(None, CapSet::Permitted) {
+        Ok(caps) => !caps.is_empty(),
+        Err(e) => {
+            panic!("capget failed {}", e);
+        }
+    }
+}
 
+fn read_overflowids() -> (uid_t, gid_t)
+{
+    let mut uid_data = String::new();
+    File::open("/proc/sys/kernel/overflowuid").unwrap().read_to_string(&mut uid_data).unwrap();
+    let overflow_uid: uid_t = match uid_data.trim().parse() {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            panic!("Could not parse {} as uid_t: {}", uid_data, e)
+        }
+    };
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    let program = args[0].clone();
+    let mut gid_data = String::new();
+    File::open("/proc/sys/kernel/overflowgid").unwrap().read_to_string(&mut gid_data).unwrap();
+    let overflow_gid: gid_t = match gid_data.trim().parse() {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            panic!("Could not parse {} as gid_t: {}", gid_data, e)
+        }
+    };
 
-    let mut opts = Options::new();
+    (overflow_uid, overflow_gid)
+}
+
+fn setup_opts(opts: &mut Options) {
     opts.optflag("h", "help", "Print this help");
     opts.optflag("V", "version", "Print version");
     opts.optopt("", "args", "Parse nul-separated args from FD", "FD");
@@ -198,6 +262,47 @@ fn main() {
     opts.optflag("",
                  "die-with-parent",
                  "Kills with SIGKILL child process (COMMAND) when bwrap or bwrap's parent dies.");
+}
+
+fn main() {
+    let real_uid = getuid();
+    let real_gid = getuid();
+
+    /* Get the (optional) privileges we need */
+    let is_privileged = acquire_privs(real_uid, real_gid);
+
+    /* Never gain any more privs during exec */
+    unsafe {
+        if prctl (PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 {
+            panic!("prctl(PR_SET_NO_NEW_CAPS) failed");
+        }
+    }
+
+    /* The initial code is run with high permissions
+       (i.e. CAP_SYS_ADMIN), so take lots of care. */
+
+    let (overflow_uid, overflow_gid) = read_overflowids();
+
+    let mut host_tty_dev: Option<String> = None;
+    if stdout_isatty() {
+        host_tty_dev = Some(unsafe {
+            let tty_ptr = ttyname(1);
+            let mut tty_string: Vec<u8> = Vec::new();
+            let mut i = 0;
+            while *tty_ptr.offset(i) != 0 {
+                tty_string.push(*tty_ptr.offset(i) as u8);
+                i += 1;
+            }
+            let tty_string = String::from_utf8(tty_string).unwrap();
+            tty_string
+        });
+    }
+
+    let args: Vec<String> = env::args().collect();
+    let program = args[0].clone();
+
+    let mut opts = Options::new();
+    setup_opts(&mut opts);
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
@@ -209,11 +314,12 @@ fn main() {
         return;
     }
 
-
-    let real_uid = getuid();
-    let real_gid = getuid();
-
-    acquire_privs(real_uid, real_gid);
+    let mut unshare_user = matches.opt_present("unshare-user");
+    /* We have to do this if we weren't installed setuid (and we're not
+     * root), so let's just DWIM */
+    if !is_privileged && getuid () != 0 {
+      unshare_user = true;
+    }
 
     println!("Hello, world!");
 }

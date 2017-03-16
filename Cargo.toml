@@ -6,3 +6,5 @@ authors = ["clint <clint@fewbar.com>"]
 [dependencies]
 getopts = "*"
 nix = "*"
+caps = "*"
+isatty = "*"
