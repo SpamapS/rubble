@@ -270,7 +270,8 @@ struct ParsedOpts {
 }
 
 fn parse_one_opt<T: FromStr>(matches: &Matches, nm: &str) -> Option<T>
-    where <T as std::str::FromStr>::Err: std::fmt::Display {
+    where <T as std::str::FromStr>::Err: std::fmt::Display
+{
     match matches.opt_str(nm) {
         None => None,
         Some(opt_str) => {
@@ -387,6 +388,26 @@ fn main() {
 
     debug!("Creating root mount point");
 
+    let opt_sandbox_uid = match popts.sandbox_uid {
+        None => real_uid,
+        Some(uid) => uid,
+    };
+    let opt_sandbox_gid = match popts.sandbox_gid {
+        None => real_gid,
+        Some(gid) => gid,
+    };
+
+    if !matches.opt_present("unshare-user") && popts.sandbox_uid.is_some() {
+        panic!("Specifying --uid requires --unshare-user");
+    }
+
+    if !matches.opt_present("unshare-user") && popts.sandbox_gid.is_some() {
+        panic!("Specifying --gid requires --unshare-user");
+    }
+
+    if !matches.opt_present("unshare-uts") && matches.opt_present("hostname") {
+        panic!("Specifying --hostname requires --unshare-uts");
+    }
 
     println!("Hello, world!");
 }
