@@ -5,18 +5,22 @@ extern crate isatty;
 #[macro_use]
 extern crate log;
 extern crate nix;
+extern crate walkdir;
 use caps::{Capability, CapSet};
 use getopts::{Options, Matches};
 use std::env;
 use std::fs;
-use std::fs::File;
-use std::io::Read;
+use std::fs::{DirBuilder, File};
+use std::os::unix::fs::{DirBuilderExt};
+use std::io::{ErrorKind,Read};
+use std::path;
 use std::str::FromStr;
 
 use isatty::stdout_isatty;
 use nix::errno;
 use nix::libc::{setfsuid, uid_t, gid_t, prctl, PR_CAPBSET_DROP, PR_SET_NO_NEW_PRIVS, ttyname};
 use nix::unistd::{geteuid, getuid};
+use walkdir::WalkDir;
 
 
 fn usage(program: &str, opts: Options) {
@@ -407,6 +411,29 @@ fn main() {
 
     if !matches.opt_present("unshare-uts") && matches.opt_present("hostname") {
         panic!("Specifying --hostname requires --unshare-uts");
+    }
+
+    /* We need to read stuff from proc during the pivot_root dance, etc.
+       Lets keep a fd to it open */
+    if !path::Path::new("/proc").exists() {
+        panic!("Can't open /proc");
+    }
+    let proc_wd = WalkDir::new("/proc");
+
+    /* We need *some* mountpoint where we can mount the root tmpfs.
+     We first try in /run, and if that fails, try in /tmp. */
+    let base_path = format!("/run/user/{}/.bubblewrap", real_uid);
+    match DirBuilder::new().mode(0o755).create(base_path) {
+        Err(ref e) if e.kind() != ErrorKind::AlreadyExists => {
+            let base_path = format!("/tmp/.bubblewrap-{}", real_uid);
+            match DirBuilder::new().mode(0o755).create(base_path) {
+                Err(ref e) if e.kind() != ErrorKind::AlreadyExists => {
+                    panic!("Creating root mountpoint failed");
+                },
+                _ => {},
+            };
+        },
+        _ => {},
     }
 
     println!("Hello, world!");
