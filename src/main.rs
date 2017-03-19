@@ -11,15 +11,19 @@ use getopts::{Options, Matches};
 use std::env;
 use std::fs;
 use std::fs::{DirBuilder, File};
-use std::os::unix::fs::{DirBuilderExt};
-use std::io::{ErrorKind,Read};
+use std::os::unix::fs::DirBuilderExt;
+use std::io::{ErrorKind, Read};
 use std::path;
 use std::str::FromStr;
 
 use isatty::stdout_isatty;
 use nix::errno;
-use nix::libc::{setfsuid, uid_t, gid_t, prctl, PR_CAPBSET_DROP, PR_SET_NO_NEW_PRIVS, ttyname};
+use nix::libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK, setfsuid, uid_t, gid_t, prctl, PR_CAPBSET_DROP,
+                PR_SET_NO_NEW_PRIVS, SIGCHLD, CLONE_NEWNS, CLONE_NEWUSER, CLONE_NEWPID,
+                CLONE_NEWNET, CLONE_NEWIPC, CLONE_NEWUTS, CLONE_NEWCGROUP, ttyname};
+use nix::sys::signal::{pthread_sigmask, SigmaskHow, Signal, SigSet};
 use nix::unistd::{geteuid, getuid};
+use nix::sys::wait::{waitpid, WNOHANG};
 use walkdir::WalkDir;
 
 
@@ -159,6 +163,23 @@ fn read_overflowids() -> (uid_t, gid_t) {
     };
 
     (overflow_uid, overflow_gid)
+}
+
+fn block_sigchild() {
+    let mut childset = SigSet::empty();
+    childset.add(Signal::SIGCHLD);
+    match pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&childset), None) {
+        Err(e) => panic!("sigprocmask: {}", e),
+        _ => {}
+    }
+
+    /* Reap any outstanding zombies that we may have inherited */
+    loop {
+        match waitpid(-1, Some(WNOHANG)) {
+            Err(_) => break,
+            _ => {}
+        }
+    }
 }
 
 fn setup_opts(opts: &mut Options) {
@@ -429,11 +450,51 @@ fn main() {
             match DirBuilder::new().mode(0o755).create(base_path) {
                 Err(ref e) if e.kind() != ErrorKind::AlreadyExists => {
                     panic!("Creating root mountpoint failed");
-                },
-                _ => {},
+                }
+                _ => {}
             };
-        },
-        _ => {},
+        }
+        _ => {}
+    }
+
+    debug!("creating new namespace");
+
+    let mut event_fd: Option<i32> = None;
+    if matches.opt_present("unshare-pid") {
+        unsafe {
+            event_fd = match eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) {
+                -1 => panic!("eventfd()"),
+                event_fd => Some(event_fd),
+            };
+        }
+    }
+
+
+    /* We block sigchild here so that we can use signalfd in the monitor. */
+    block_sigchild();
+
+    let mut clone_flags = SIGCHLD | CLONE_NEWNS;
+    if matches.opt_present("unshare-user") {
+        clone_flags |= CLONE_NEWUSER;
+    }
+    if matches.opt_present("unshare-pid") {
+        clone_flags |= CLONE_NEWPID;
+    }
+    if matches.opt_present("unshare-net") {
+        clone_flags |= CLONE_NEWNET;
+    }
+    if matches.opt_present("unshare-ipc") {
+        clone_flags |= CLONE_NEWUTS;
+    }
+    if matches.opt_present("unshare-cgroup") {
+        match fs::metadata("/proc/self/ns/cgroup") {
+            Err(ref e) if e.kind() == ErrorKind::NotFound => {
+                panic!("Cannot create new cgroup namespace because the kernel does not support it")
+            }
+            Err(e) => panic!("stat on /proc/self/ns/cgroup failed"),
+            _ => {}
+        }
+        clone_flags |= CLONE_NEWCGROUP;
     }
 
     println!("Hello, world!");
