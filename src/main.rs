@@ -496,6 +496,17 @@ fn main() {
         }
         clone_flags |= CLONE_NEWCGROUP;
     }
+    if matches.opt_present("unshare-cgroup-try") {
+        match fs::metadata("/proc/self/ns/cgroup") {
+            Ok(_) => clone_flags |= CLONE_NEWCGROUP,
+            _ => {}
+        }
+    }
+
+    let child_wait_fd = unsafe { eventfd(0, EFD_CLOEXEC) };
+    if child_wait_fd == -1 {
+        panic!("eventfd()")
+    }
 
     println!("Hello, world!");
 }
