@@ -5,7 +5,9 @@ extern crate isatty;
 #[macro_use]
 extern crate log;
 extern crate nix;
+extern crate syscall;
 extern crate walkdir;
+
 use caps::{Capability, CapSet};
 use getopts::{Options, Matches};
 use std::env;
@@ -27,6 +29,8 @@ use nix::unistd::{geteuid, getuid};
 use nix::sys::wait::{waitpid, WNOHANG};
 use walkdir::WalkDir;
 
+mod utils;
+use utils::raw_clone;
 
 fn usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} FILE [options]", program);
@@ -506,6 +510,20 @@ fn main() {
         Err(_) => panic!("eventfd()"),
         _ => {}
     };
+
+    let pid = raw_clone(clone_flags as i64); // XXX not sure this is ok
+    if pid == -1 {
+        if opt_unshare_user {
+            match errno::Errno::last() {
+                errno::EINVAL => panic!("Creating new namespace failed, likely because the kernel does not support user namespaces.  bwrap must be installed setuid on such systems."),
+                errno::EPERM if !is_privileged => panic!("No permissions to creating new namespace, likely because the kernel does not allow non-privileged user namespaces. On e.g. debian this can be enabled with 'sysctl kernel.unprivileged_userns_clone=1'."),
+                _ => {}
+            }
+        }
+        panic!("Creating new namespace failed");
+    }
+
+
 
     println!("Hello, world!");
 }
