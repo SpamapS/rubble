@@ -18,10 +18,11 @@ use std::str::FromStr;
 
 use isatty::stdout_isatty;
 use nix::errno;
-use nix::libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK, setfsuid, uid_t, gid_t, prctl, PR_CAPBSET_DROP,
+use nix::libc::{setfsuid, uid_t, gid_t, prctl, PR_CAPBSET_DROP,
                 PR_SET_NO_NEW_PRIVS, SIGCHLD, CLONE_NEWNS, CLONE_NEWUSER, CLONE_NEWPID,
                 CLONE_NEWNET, CLONE_NEWIPC, CLONE_NEWUTS, CLONE_NEWCGROUP, ttyname};
 use nix::sys::signal::{pthread_sigmask, SigmaskHow, Signal, SigSet};
+use nix::sys::eventfd::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
 use nix::unistd::{geteuid, getuid};
 use nix::sys::wait::{waitpid, WNOHANG};
 use walkdir::WalkDir;
@@ -461,12 +462,10 @@ fn main() {
 
     let mut event_fd: Option<i32> = None;
     if matches.opt_present("unshare-pid") {
-        unsafe {
-            event_fd = match eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) {
-                -1 => panic!("eventfd()"),
-                event_fd => Some(event_fd),
-            };
-        }
+        event_fd = match eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) {
+            Err(_) => panic!("eventfd()"),
+            Ok(event_fd) => Some(event_fd),
+        };
     }
 
 
@@ -503,10 +502,10 @@ fn main() {
         }
     }
 
-    let child_wait_fd = unsafe { eventfd(0, EFD_CLOEXEC) };
-    if child_wait_fd == -1 {
-        panic!("eventfd()")
-    }
+    let child_wait_fd = match eventfd(0, EFD_CLOEXEC) {
+        Err(_) => panic!("eventfd()"),
+        _ => {},
+    };
 
     println!("Hello, world!");
 }
