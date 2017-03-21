@@ -18,9 +18,9 @@ use std::str::FromStr;
 
 use isatty::stdout_isatty;
 use nix::errno;
-use nix::libc::{setfsuid, uid_t, gid_t, prctl, PR_CAPBSET_DROP,
-                PR_SET_NO_NEW_PRIVS, SIGCHLD, CLONE_NEWNS, CLONE_NEWUSER, CLONE_NEWPID,
-                CLONE_NEWNET, CLONE_NEWIPC, CLONE_NEWUTS, CLONE_NEWCGROUP, ttyname};
+use nix::libc::{setfsuid, uid_t, gid_t, prctl, PR_CAPBSET_DROP, PR_SET_NO_NEW_PRIVS, SIGCHLD,
+                CLONE_NEWNS, CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNET, CLONE_NEWIPC, CLONE_NEWUTS,
+                CLONE_NEWCGROUP, ttyname};
 use nix::sys::signal::{pthread_sigmask, SigmaskHow, Signal, SigSet};
 use nix::sys::eventfd::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
 use nix::unistd::{geteuid, getuid};
@@ -504,7 +504,7 @@ fn main() {
 
     let child_wait_fd = match eventfd(0, EFD_CLOEXEC) {
         Err(_) => panic!("eventfd()"),
-        _ => {},
+        _ => {}
     };
 
     println!("Hello, world!");
